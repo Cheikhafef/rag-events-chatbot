@@ -1,0 +1,191 @@
+import requests
+import pandas as pd
+from datetime import datetime, timedelta
+import os
+import re
+
+#  Clé API OpenAgenda
+API_KEY = "1e9f7aedeced45b1b99ee066abc71c6c"
+
+#  Agendas parisiens pertinents
+AGENDA_UIDS = [
+    "5790361",     # Info Jeunes Paris
+    "96240415",    # Jeunes à Paris
+    "78993009",     # Paris&Co
+    #  haute priorité 
+    "56500817",   # OpenAgenda en Île-de-France (agrégateur)
+    "86244142",   # Ministère de la Culture – événements nationaux
+
+    # culture & arts 
+    "24744428",   # Orchestre national d'Île-de-France
+    "49760247",   # Frac Île-de-France, Le Plateau
+    "43070835",   # GL Events Exhibitions – Paris (salons, expos)
+
+    # nature & sciences 
+    "68165804",   # Île-de-France Nature Animations
+    "59610190",   # Événements sciences en Île-de-France
+]
+
+# 1 an d'historique
+one_year_ago = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
+
+LIMIT = 100
+MAX_EVENTS = 5000
+
+all_events = []
+
+print(" Récupération des événements Paris (filtrage textuel intelligent)...")
+# Boucle sur chaque agenda
+for uid in AGENDA_UIDS:
+    print(f"\n Agenda : {uid}")
+
+    offset = 0
+
+    while True:
+        params = {
+            "key": API_KEY,
+            "limit": LIMIT,
+            "offset": offset,
+            "timezone": "Europe/Paris",
+            "detailed": 1,
+            "startsAfter": one_year_ago,     #  1 an d'historique
+            "startsBefore": "2030-01-01"     #  événements futurs
+            
+        }
+
+        url = f"https://api.openagenda.com/v2/agendas/{uid}/events"
+        response = requests.get(url, params=params)
+
+        print("  Status code :", response.status_code)
+
+        if response.status_code != 200:
+            print("  ❌ Erreur API :", response.text)
+            break
+
+        data = response.json()
+        events = data.get("events", [])
+
+        if not events:
+            break
+
+        all_events.extend(events)
+        offset += LIMIT
+
+        if len(events) < LIMIT or len(all_events) >= MAX_EVENTS:
+            break
+
+print("\n Total événements bruts récupérés :", len(all_events))
+
+if not all_events:
+    raise ValueError("❌ Aucun événement récupéré → vérifier la clé API.")
+
+# Nettoyage & transformation
+
+def extract_description(event):
+    return (
+        event.get("longDescription", {}).get("fr")
+        or event.get("description", {}).get("fr")
+        or event.get("shortDescription", {}).get("fr")
+        or event.get("summary", {}).get("fr")
+        or ""
+    )
+
+def extract_best_date(event):
+    timings = event.get("timings", [])
+    if not timings:
+        return None
+
+    dates = []
+    for t in timings:
+        d = t.get("begin")
+        if d:
+            try:
+                dates.append(pd.to_datetime(d, utc=True))
+            except:
+                pass
+
+    if not dates:
+        return None
+
+    now = pd.Timestamp.now(tz="UTC")
+    return min(dates, key=lambda x: abs(x - now))
+
+#  Filtrage Paris (text mining)
+
+PARIS_KEYWORDS = [
+    "paris", "750", "75 ", "75-", "75.", "paris ",
+    "paris-", "paris.", "paris 1", "paris 2", "paris 3",
+    "montmartre", "belleville", "châtelet", "bercy",
+    "la villette", "pigalle", "république", "opéra"
+]
+
+def is_paris_event(text):
+    if not text:
+        return False
+
+    text = text.lower()
+
+    # 1. Mots-clés Paris
+    for kw in PARIS_KEYWORDS:
+        if kw in text:
+            return True
+
+    # 2. Code postal parisien
+    if re.search(r"\b75\d{3}\b", text):
+        return True
+
+    return False
+
+
+# Construction du dataset propre
+clean_events = []
+# Modifiez la boucle de construction du dataset
+for event in all_events:
+    loc = event.get("location", {}) or {}
+    
+    # Extraction précise des données géographiques
+    city_name = (loc.get("city") or "").lower()
+    postal_code = str(loc.get("postalCode") or "")
+    
+    # Filtrage strict : soit le CP commence par 75, soit la ville est Paris
+    is_in_paris = postal_code.startswith("75") or "paris" in city_name
+
+    if not is_in_paris:
+        continue
+
+    # Si c'est validé, on ajoute au dataset
+    clean_events.append({
+        "title": event.get("title", {}).get("fr", ""),
+        "description": extract_description(event),
+        "city": loc.get("city", "Paris"),
+        "address": loc.get("address", ""),
+        "postal_code": postal_code, # Utile pour vos tests unitaires
+        "start_date": extract_best_date(event)
+    })
+
+df = pd.DataFrame(clean_events)
+
+# Nettoyage
+df = df.dropna(subset=["title", "description", "start_date"])
+df = df.drop_duplicates()
+
+print(" Nombre d'événements filtrés Paris :", len(df))
+
+#  Construction du champ RAG
+
+# On crée une description textuelle riche
+df["content"] = df.apply(lambda row: (
+    f"Événement : {row['title']}. "
+    f"Lieu : {row['address']}, {row['city']}. "
+    f"Date : {row['start_date'].strftime('%d/%m/%Y') if not pd.isna(row['start_date']) else 'Date non précisée'}. "
+    f"Description : {row['description']}"
+), axis=1)
+
+#  Sauvegarde
+
+os.makedirs("data", exist_ok=True)
+output_path = "data/events_clean.csv"
+df.to_csv(output_path, index=False, encoding="utf-8")
+
+print("\n✅ Dataset propre sauvegardé :", output_path)
+print("📊 Nombre final d'événements :", len(df))

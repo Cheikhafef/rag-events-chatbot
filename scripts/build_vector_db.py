@@ -120,8 +120,8 @@ def build_documents(dataframe: pd.DataFrame, splitter: RecursiveCharacterTextSpl
 
 
 text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=300,
-    chunk_overlap=50,
+    chunk_size=800,
+    chunk_overlap=150,
     length_function=len,
     separators=["\n\n", "\n", ".", " ", ""],
 )

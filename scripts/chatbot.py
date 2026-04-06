@@ -24,6 +24,7 @@ import sys
 import re
 from datetime import datetime
 from dotenv import load_dotenv
+import time
 
 # --------------------------------------------------
 # 1  Chargement de l'environnement
@@ -45,7 +46,8 @@ from langchain_community.vectorstores import FAISS
 # --------------------------------------------------
 # 3  Embeddings + FAISS
 # --------------------------------------------------
-EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+#  modèle lu depuis le .env
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 INDEX_PATH      = "data/index/faiss_index"
 
 print("Chargement embeddings + index FAISS...")
@@ -233,16 +235,34 @@ while True:
     print("Recherche en cours...\n")
 
     try:
-        docs   = retriever.invoke(question)
+        start_total = time.time()
+
+        t0 = time.time()
+        docs = retriever.invoke(question)
+        t1 = time.time()
+
         events = filter_events(docs)
+        t2 = time.time()
 
         if not events:
-            print("Desole, aucun evenement trouve pour cette recherche.\n")
+            print("Désolé, aucun événement trouvé.\n")
             continue
 
-        prompt   = build_prompt(question, events)
+        prompt = build_prompt(question, events)
         response = llm.invoke(prompt)
+        t3 = time.time()
+
+        # ✅ Réponse
         print("Assistant :\n" + response.content + "\n")
+
+        # ✅ Temps total
+        total = round(t3 - start_total, 2)
+        print(f"⏱️ Temps total : {total} secondes")
+
+        # ✅ Détails (BONUS)
+        print(f"   🔎 Retrieval : {round(t1 - t0, 2)} s")
+        print(f"   🧹 Filtrage  : {round(t2 - t1, 2)} s")
+        print(f"   🤖 LLM       : {round(t3 - t2, 2)} s\n")
 
     except Exception as e:
         print("Erreur : " + str(e) + "\n")

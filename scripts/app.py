@@ -33,7 +33,7 @@ from dotenv import load_dotenv
 from langchain_mistralai import ChatMistralAI
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
-
+import time
 # --------------------------------------------------
 # 1  Environnement
 # --------------------------------------------------
@@ -271,26 +271,35 @@ if clicked and not question:
     st.warning("Veuillez saisir une question.")
 
 if question and clicked:
+    start_total = time.time()
+
     mois_filter, annee_filter = detect_date_filter(question)
 
     with st.spinner("Recherche en cours..."):
+        t0 = time.time()
+
         if mois_filter or annee_filter:
-            # Scan complet de la base pour les requêtes avec date précise
-            all_docs = vector_db.similarity_search(question, k=vector_db.index.ntotal)
+            all_docs = vector_db.similarity_search(
+                question,
+                k=vector_db.index.ntotal
+            )
         else:
-            # Recherche MMR pour les requêtes sémantiques générales
             retriever = vector_db.as_retriever(
                 search_type="mmr",
                 search_kwargs={"k": 15, "fetch_k": 40}
             )
             all_docs = retriever.invoke(question)
 
+        t1 = time.time()
+
         events = filter_events(all_docs, mois_filter, annee_filter)
+        t2 = time.time()
 
     if not events:
         st.warning("Aucun événement trouvé pour cette recherche.")
     else:
         contexte = "\n".join(events[:8])
+
         prompt = (
             "[INST] Tu es l'assistant Puls-Events. "
             "En utilisant UNIQUEMENT la liste suivante, reponds en francais "
@@ -299,9 +308,24 @@ if question and clicked:
             + contexte
             + "\n\nQUESTION : " + question + " [/INST]"
         )
+
         response = llm.invoke(prompt)
+        t3 = time.time()
+
+        # ✅ Réponse
         st.success(response.content)
 
-        with st.expander("Voir les événements sources (" + str(len(events)) + " trouvés)"):
+        # ✅ Temps global
+        total_time = round(t3 - start_total, 2)
+        st.info(f"⏱️ Temps total : {total_time} secondes")
+
+        # ✅ Détail (bonus très pro)
+        with st.expander("⚙️ Détails des performances"):
+            st.write(f"🔎 Retrieval : {round(t1 - t0, 2)} s")
+            st.write(f"🧹 Filtrage  : {round(t2 - t1, 2)} s")
+            st.write(f"🤖 LLM       : {round(t3 - t2, 2)} s")
+
+        # ✅ Sources
+        with st.expander(f"Voir les événements sources ({len(events)} trouvés)"):
             for ev in events:
                 st.write("• " + ev)
